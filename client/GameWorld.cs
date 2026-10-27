@@ -1,7 +1,9 @@
 using Godot;
 using Ghostline.Simulation;
+using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text.Json;
 
 namespace Ghostline.Client;
 
@@ -9,6 +11,7 @@ public partial class GameWorld : Node2D
 {
     // Node references
     private Sprite2D _playerVisual = null!;
+    private HttpRequest _http = null!;
 
     // Authoritative headless simulation instance
     private SimulationWorld _simulation = null!;
@@ -20,10 +23,20 @@ public partial class GameWorld : Node2D
     // In-memory replay buffer: captures authoritative run inputs for server verification
     private readonly List<PlayerInput> _recordedInputs = new();
     private bool _showSkillQEffect;
+    private string _submissionStatus = "Press F6: Export Replay | Press F7: Submit to Leaderboard";
+    private bool _isSubmitting;
+
+    // Default backend endpoint (adjust port if launchSettings.json specifies another, e.g., 5194)
+    private const string ApiEndpoint = "http://localhost:5000/api/runs";
 
     public override void _Ready()
     {
         _playerVisual = GetNode<Sprite2D>("PlayerVisual");
+
+        // Set up HTTP Request node for backend communication
+        _http = new HttpRequest();
+        AddChild(_http);
+        _http.RequestCompleted += OnHttpRequestCompleted;
 
         // Spawn player near center of default arena (500, 400) screen pixels with a deterministic seed
         var spawnPosition = SimVector2.FromScreenPixels(500f, 400f);
@@ -101,9 +114,10 @@ public partial class GameWorld : Node2D
                          $"[Q] Shockwave: {(qCd > 0 ? $"{qCd:F1}s" : "READY")}\n" +
                          $"[E] Shield (15 HP): {(eCd > 0 ? $"{eCd:F1}s" : "READY")}\n" +
                          $"[R] Laser Beam (5s): {(rCd > 0 ? $"{rCd:F1}s" : "READY")}\n" +
-                         $"Recorded Inputs: {_recordedInputs.Count}";
+                         $"Recorded Inputs: {_recordedInputs.Count}\n" +
+                         $"{_submissionStatus}";
 
-        DrawString(ThemeDB.FallbackFont, new Vector2(minX + 15, minY + 30), hudText, HorizontalAlignment.Left, -1, 15, Colors.White);
+        DrawString(ThemeDB.FallbackFont, new Vector2(minX + 15, minY + 30), hudText, HorizontalAlignment.Left, -1, 14, Colors.White);
     }
 
     public override void _Process(double delta)
@@ -112,6 +126,12 @@ public partial class GameWorld : Node2D
         if (Input.IsKeyPressed(Key.F6))
         {
             ExportReplay("latest_run.replay");
+        }
+
+        // F7: Submit replay to backend for authoritative verification
+        if (Input.IsKeyPressed(Key.F7) && !_isSubmitting)
+        {
+            SubmitRun();
         }
 
         // Accumulate elapsed real time, capped at 0.2s to prevent timestep death spirals
@@ -199,6 +219,74 @@ public partial class GameWorld : Node2D
         byte[] data = replay.Serialize();
 
         File.WriteAllBytes(filePath, data);
+        _submissionStatus = $"Saved: {filePath} ({data.Length} bytes)";
         GD.Print($"Replay successfully exported to: {filePath} ({data.Length} bytes)");
+    }
+
+    // Submits the current run and binary replay payload to the backend API.
+    public void SubmitRun()
+    {
+        if (_recordedInputs.Count == 0)
+        {
+            _submissionStatus = "Cannot submit: No input frames recorded.";
+            return;
+        }
+
+        _isSubmitting = true;
+        _submissionStatus = "Submitting run to server...";
+
+        var spawnPos = SimVector2.FromScreenPixels(500f, 400f);
+        var header = new ReplayHeader(
+            Version: ReplayFile.CurrentVersion,
+            Seed: _simulation.Seed,
+            SpawnPosition: spawnPos,
+            InputCount: _recordedInputs.Count
+        );
+
+        var replay = new ReplayFile(header, _recordedInputs);
+        byte[] replayBytes = replay.Serialize();
+        string base64Payload = Convert.ToBase64String(replayBytes);
+
+        var requestBody = new
+        {
+            playerName = "Player1",
+            claimedScore = _simulation.Score,
+            seed = _simulation.Seed,
+            replayBase64 = base64Payload
+        };
+
+        string json = JsonSerializer.Serialize(requestBody);
+        string[] headers = new[] { "Content-Type: application/json" };
+
+        Error err = _http.Request(ApiEndpoint, headers, HttpClient.Method.Post, json);
+        if (err != Error.Ok)
+        {
+            _submissionStatus = $"HTTP Error: Failed to initiate request ({err})";
+            _isSubmitting = false;
+        }
+    }
+
+    private void OnHttpRequestCompleted(long result, long responseCode, string[] headers, byte[] body)
+    {
+        _isSubmitting = false;
+
+        if (responseCode == 201)
+        {
+            string responseText = System.Text.Encoding.UTF8.GetString(body);
+            using var doc = JsonDocument.Parse(responseText);
+            var root = doc.RootElement;
+
+            bool isVerified = root.GetProperty("isVerified").GetBoolean();
+            int verifiedScore = root.GetProperty("verifiedScore").GetInt32();
+
+            _submissionStatus = isVerified
+                ? $"Verified by Server: Score {verifiedScore}"
+                : "Rejected: Replay diverged from server simulation!";
+        }
+        else
+        {
+            _submissionStatus = $"Submission Failed: HTTP {responseCode}";
+            GD.PrintErr($"Run submission failed with status code {responseCode}");
+        }
     }
 }

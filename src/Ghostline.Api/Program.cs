@@ -20,15 +20,32 @@ builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
+// Always enable developer exception page and Swagger in local dev
+app.UseDeveloperExceptionPage();
+app.UseSwagger();
+app.UseSwaggerUI();
 
 // 3. API Endpoints
 
-// Submits a gameplay run with its binary replay payload for authoritative server verification.
+// Diagnostic test endpoint to verify raw PostgreSQL connection and table state
+app.MapGet("/api/health/db", async (AppDbContext db) =>
+{
+    try
+    {
+        bool canConnect = await db.Database.CanConnectAsync();
+        int count = await db.Runs.CountAsync();
+        return Results.Ok(new { status = "Healthy", canConnect, runCount = count });
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem(
+            detail: ex.ToString(),
+            title: "Database Connection Failed",
+            statusCode: 500
+        );
+    }
+});
+
 app.MapPost("/api/runs", async (
     SubmitRunRequest request,
     AppDbContext db,
@@ -50,7 +67,6 @@ app.MapPost("/api/runs", async (
         return Results.BadRequest(new { error = "Invalid Base64 format for ReplayBase64." });
     }
 
-    // Run authoritative headless re-simulation
     var result = verifier.Verify(replayBytes, request.ClaimedScore);
 
     var record = new RunRecord
@@ -80,11 +96,8 @@ app.MapPost("/api/runs", async (
         record.VerificationError,
         record.CreatedAtUtc
     });
-})
-.WithName("SubmitRun")
-.WithOpenApi();
+});
 
-// Retrieves the top verified runs for the leaderboard.
 app.MapGet("/api/leaderboard", async (AppDbContext db, int limit = 20) =>
 {
     int queryLimit = Math.Clamp(limit, 1, 100);
@@ -106,13 +119,8 @@ app.MapGet("/api/leaderboard", async (AppDbContext db, int limit = 20) =>
         .ToListAsync();
 
     return Results.Ok(topRuns);
-})
-.WithName("GetLeaderboard")
-.WithOpenApi();
+});
 
-/// <summary>
-/// Retrieves raw binary replay bytes for match playback.
-/// </summary>
 app.MapGet("/api/runs/{id:guid}/replay", async (Guid id, AppDbContext db) =>
 {
     var run = await db.Runs
@@ -125,13 +133,10 @@ app.MapGet("/api/runs/{id:guid}/replay", async (Guid id, AppDbContext db) =>
         return Results.NotFound();
 
     return Results.File(run.ReplayData, "application/octet-stream", $"{id}.replay");
-})
-.WithName("DownloadReplay")
-.WithOpenApi();
+});
 
 app.Run();
 
-// DTO for run submission
 public record SubmitRunRequest(
     string PlayerName,
     int ClaimedScore,
