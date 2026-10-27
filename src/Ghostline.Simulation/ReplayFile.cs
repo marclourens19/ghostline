@@ -1,4 +1,5 @@
 ﻿using System.IO;
+using System.Collections.Generic;
 
 namespace Ghostline.Simulation;
 
@@ -79,30 +80,28 @@ public class ReplayFile
     // Deserializes a binary replay payload from a byte array.
     public static ReplayFile Deserialize(byte[] payload)
     {
-        // PRIORITY 1: Limit the maximum decoded replay size[cite: 4]. Limit to 5MB (approx 5 hours of gameplay)
         if (payload == null || payload.Length == 0 || payload.Length > 5 * 1024 * 1024)
             throw new InvalidDataException("Replay payload exceeds maximum allowed size.");
 
         using var ms = new MemoryStream(payload);
         using var reader = new BinaryReader(ms);
 
-        // Read Magic Bytes (Assuming "GHST" check is already here)
+        // Read Magic Bytes
         byte[] magic = reader.ReadBytes(4);
-        if (magic[0] != 'G' || magic[1] != 'H' || magic[2] != 'S' || magic[3] != 'T')
+        if (magic.Length < 4 || magic[0] != 'G' || magic[1] != 'H' || magic[2] != 'S' || magic[3] != 'T')
             throw new InvalidDataException("Invalid replay file signature.");
 
+        // Read version correctly as a single byte
         byte version = reader.ReadByte();
         uint seed = reader.ReadUInt32();
         int spawnX = reader.ReadInt32();
         int spawnY = reader.ReadInt32();
 
-        // PRIORITY 1: Validate spawn coordinates[cite: 4]
         if (spawnX < -100_000 || spawnX > 2000_000 || spawnY < -100_000 || spawnY > 2000_000)
             throw new InvalidDataException("Spawn coordinates out of valid bounds.");
 
         int inputCount = reader.ReadInt32();
 
-        // PRIORITY 1: Limit the number of frames[cite: 4]. Max ~2 hours at 60 FPS
         if (inputCount < 0 || inputCount > 432_000)
             throw new InvalidDataException("Replay frame count exceeds allowed bounds.");
 
@@ -113,15 +112,17 @@ public class ReplayFile
             sbyte moveX = reader.ReadSByte();
             sbyte moveY = reader.ReadSByte();
 
-            // PRIORITY 1: Reject movement values outside the permitted range[cite: 4].
             if (moveX < -1 || moveX > 1 || moveY < -1 || moveY > 1)
                 throw new InvalidDataException($"Invalid movement input at tick {tick}. MoveX/MoveY must be exactly -1, 0, or 1.");
 
-            bool dash = reader.ReadBoolean();
-            bool attack = reader.ReadBoolean();
-            bool skillQ = reader.ReadBoolean();
-            bool skillE = reader.ReadBoolean();
-            bool skillR = reader.ReadBoolean();
+            // FIX: Correctly read the 1-byte bitmask instead of 5 separate booleans
+            byte actions = reader.ReadByte();
+            bool dash = (actions & ActionFlagDash) != 0;
+            bool attack = (actions & ActionFlagAttack) != 0;
+            bool skillQ = (actions & ActionFlagSkillQ) != 0;
+            bool skillE = (actions & ActionFlagSkillE) != 0;
+            bool skillR = (actions & ActionFlagSkillR) != 0;
+
             int aimX = reader.ReadInt32();
             int aimY = reader.ReadInt32();
 
@@ -133,7 +134,7 @@ public class ReplayFile
         return new ReplayFile(header, inputs);
     }
 
-    //Reads and validates a replay payload from an active BinaryReader stream.
+    // Reads and validates a replay payload from an active BinaryReader stream.
     public static ReplayFile ReadFrom(BinaryReader reader)
     {
         // 1. Validate Magic Bytes
@@ -158,11 +159,15 @@ public class ReplayFile
         uint seed = reader.ReadUInt32();
         int spawnX = reader.ReadInt32();
         int spawnY = reader.ReadInt32();
+
+        if (spawnX < -100_000 || spawnX > 2000_000 || spawnY < -100_000 || spawnY > 2000_000)
+            throw new InvalidDataException("Spawn coordinates out of valid bounds.");
+
         int inputCount = reader.ReadInt32();
 
-        if (inputCount < 0)
+        if (inputCount < 0 || inputCount > 432_000)
         {
-            throw new InvalidDataException($"Negative input frame count: {inputCount}.");
+            throw new InvalidDataException($"Invalid input frame count: {inputCount}.");
         }
 
         var header = new ReplayHeader(
@@ -179,6 +184,10 @@ public class ReplayFile
             int tick = reader.ReadInt32();
             sbyte moveX = reader.ReadSByte();
             sbyte moveY = reader.ReadSByte();
+
+            if (moveX < -1 || moveX > 1 || moveY < -1 || moveY > 1)
+                throw new InvalidDataException($"Invalid movement input at tick {tick}. MoveX/MoveY must be exactly -1, 0, or 1.");
+
             byte actions = reader.ReadByte();
             int aimTargetX = reader.ReadInt32();
             int aimTargetY = reader.ReadInt32();

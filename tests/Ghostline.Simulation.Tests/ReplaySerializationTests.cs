@@ -1,4 +1,6 @@
-﻿using System.IO;
+﻿using System;
+using System.Collections.Generic;
+using System.IO;
 using Xunit;
 using Ghostline.Api.Services;
 
@@ -166,5 +168,54 @@ public class ReplaySerializationTests
         Assert.False(result.IsValid);
         Assert.Equal(0, result.AuthoritativeScore);
         Assert.Contains("Score mismatch", result.ErrorMessage);
+    }
+
+    [Fact]
+    public void Deserialization_ThrowsInvalidDataException_WhenMovementIsOutOfRange()
+    {
+        // ARRANGE: Construct a malicious payload manually to simulate a speed-hacked client
+        using var ms = new MemoryStream();
+        using var writer = new BinaryWriter(ms);
+
+        writer.Write(new byte[] { (byte)'G', (byte)'H', (byte)'S', (byte)'T' });
+        writer.Write(ReplayFile.CurrentVersion);
+        writer.Write((uint)1337);
+        writer.Write(500_000);
+        writer.Write(400_000);
+        writer.Write(1); // 1 Input frame
+
+        writer.Write(0); // Tick
+        writer.Write((sbyte)127); // Malicious MoveX (Outside -1, 0, 1)
+        writer.Write((sbyte)0);   // MoveY
+        writer.Write(false); // Dash
+        writer.Write(false); // Attack
+        writer.Write(false); // SkillQ
+        writer.Write(false); // SkillE
+        writer.Write(false); // SkillR
+        writer.Write(0); // AimX
+        writer.Write(0); // AimY
+
+        // ACT & ASSERT: Must reject payload before it ever reaches the simulation engine
+        var ex = Assert.Throws<InvalidDataException>(() => ReplayFile.Deserialize(ms.ToArray()));
+        Assert.Contains("Invalid movement input", ex.Message);
+    }
+
+    [Fact]
+    public void Deserialization_ThrowsInvalidDataException_WhenFrameCountIsExceeded()
+    {
+        // ARRANGE: Construct a payload claiming a malicious frame count
+        using var ms = new MemoryStream();
+        using var writer = new BinaryWriter(ms);
+
+        writer.Write(new byte[] { (byte)'G', (byte)'H', (byte)'S', (byte)'T' });
+        writer.Write(ReplayFile.CurrentVersion);
+        writer.Write((uint)1337);
+        writer.Write(500_000);
+        writer.Write(400_000);
+        writer.Write(500_000); // Exceeds the 432,000 internal limits
+
+        // ACT & ASSERT: Must reject payload with InvalidDataException
+        var ex = Assert.Throws<InvalidDataException>(() => ReplayFile.Deserialize(ms.ToArray()));
+        Assert.Contains("Replay frame count exceeds", ex.Message);
     }
 }
