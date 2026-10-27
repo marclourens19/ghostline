@@ -42,7 +42,7 @@ if (app.Environment.IsDevelopment())
 // 3. API Endpoints
 
 // Diagnostic test endpoint to verify raw PostgreSQL connection and table state
-app.MapGet("/api/health/db", async (AppDbContext db, IWebHostEnvironment env) =>
+app.MapGet("/api/health/db", async (AppDbContext db, IWebHostEnvironment env, ILogger<Program> logger) =>
 {
     try
     {
@@ -52,6 +52,8 @@ app.MapGet("/api/health/db", async (AppDbContext db, IWebHostEnvironment env) =>
     }
     catch (Exception ex)
     {
+        logger.LogError(ex, "Database health check probe failed.");
+
         // PRIORITY 2: Return generic production errors with an appropriate request identifier.
         return Results.Problem(
             detail: env.IsDevelopment() ? ex.ToString() : "A database connection error occurred.",
@@ -64,14 +66,21 @@ app.MapGet("/api/health/db", async (AppDbContext db, IWebHostEnvironment env) =>
 app.MapPost("/api/runs", async (
     SubmitRunRequest request,
     AppDbContext db,
-    IReplayVerificationService verifier) =>
+    IReplayVerificationService verifier,
+    ILogger<Program> logger) =>
 {
     // PRIORITY 2: PlayerName content and length validation
     if (string.IsNullOrWhiteSpace(request.PlayerName) || request.PlayerName.Length > 32)
+    {
+        logger.LogWarning("Run rejected: invalid PlayerName provided.");
         return Results.BadRequest(new { error = "PlayerName is required and must be 32 characters or fewer." });
+    }
 
     if (request.ReplayBase64 == null || request.ReplayBase64.Length == 0)
+    {
+        logger.LogWarning("Run rejected: empty replay payload from player '{PlayerName}'.", request.PlayerName);
         return Results.BadRequest(new { error = "Replay data is required." });
+    }
 
     byte[] replayBytes;
     try
@@ -80,6 +89,7 @@ app.MapPost("/api/runs", async (
     }
     catch (FormatException)
     {
+        logger.LogWarning("Run rejected: invalid Base64 string submitted by player '{PlayerName}'.", request.PlayerName);
         return Results.BadRequest(new { error = "Invalid Base64 format for ReplayBase64." });
     }
 
@@ -91,12 +101,15 @@ app.MapPost("/api/runs", async (
     }
     catch (InvalidDataException ex)
     {
+        logger.LogWarning("Run rejected: malformed replay payload from player '{PlayerName}': {Message}", request.PlayerName, ex.Message);
         return Results.BadRequest(new { error = $"Invalid replay payload: {ex.Message}" });
     }
 
     // PRIORITY 2: Reject mismatched seeds.
     if (request.Seed != replay.Header.Seed)
     {
+        logger.LogWarning("Run rejected: seed mismatch for player '{PlayerName}'. Request: {ReqSeed}, Replay: {ReplaySeed}",
+            request.PlayerName, request.Seed, replay.Header.Seed);
         return Results.BadRequest(new { error = "Request seed does not match the seed embedded in the replay payload." });
     }
 
@@ -106,10 +119,25 @@ app.MapPost("/api/runs", async (
     bool isDuplicate = await db.Runs.AnyAsync(r => r.ReplayHash == replayHash);
     if (isDuplicate)
     {
+        logger.LogWarning("Run rejected: duplicate replay hash {Hash} submitted by player '{PlayerName}'.", replayHash, request.PlayerName);
         return Results.Conflict(new { error = "Duplicate submission: This exact replay has already been processed." });
     }
 
+    logger.LogInformation("Verifying run for player '{PlayerName}' (Claimed: {Score}, Frames: {Frames}, Seed: {Seed})...",
+        request.PlayerName, request.ClaimedScore, replay.Header.InputCount, replay.Header.Seed);
+
     var result = verifier.Verify(replayBytes, request.ClaimedScore);
+
+    if (result.IsValid)
+    {
+        logger.LogInformation("Run VERIFIED for player '{PlayerName}'. Score: {Score}, Total Ticks: {Ticks}.",
+            request.PlayerName, result.AuthoritativeScore, result.AuthoritativeTicks);
+    }
+    else
+    {
+        logger.LogWarning("Run REJECTED for player '{PlayerName}'. Claimed: {Claimed}, Authoritative: {Auth}, Reason: {Reason}",
+            request.PlayerName, request.ClaimedScore, result.AuthoritativeScore, result.ErrorMessage);
+    }
 
     var record = new RunRecord
     {
