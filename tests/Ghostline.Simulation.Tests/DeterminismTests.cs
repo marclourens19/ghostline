@@ -32,7 +32,12 @@ public class DeterminismTests
                 MoveX: moveX,
                 MoveY: moveY,
                 Dash: dash,
-                Attack: false
+                Attack: false,
+                SkillQ: false,
+                SkillE: false,
+                SkillR: false,
+                AimTargetX: 200_000,
+                AimTargetY: 200_000
             );
         }
 
@@ -65,7 +70,18 @@ public class DeterminismTests
         // Continuously send Right (MoveX = 1) inputs
         for (int tick = 0; tick < 300; tick++)
         {
-            sim.Step(new PlayerInput(tick, MoveX: 1, MoveY: 0, Dash: false, Attack: false));
+            sim.Step(new PlayerInput(
+                tick,
+                MoveX: 1,
+                MoveY: 0,
+                Dash: false,
+                Attack: false,
+                SkillQ: false,
+                SkillE: false,
+                SkillR: false,
+                AimTargetX: 0,
+                AimTargetY: 0
+            ));
         }
 
         // ASSERT:
@@ -86,7 +102,18 @@ public class DeterminismTests
         // ACT: Run 300 ticks with idle inputs to allow multiple enemy spawn waves
         for (int tick = 0; tick < 300; tick++)
         {
-            var input = new PlayerInput(tick, 0, 0, false, false);
+            var input = new PlayerInput(
+                tick,
+                MoveX: 0,
+                MoveY: 0,
+                Dash: false,
+                Attack: false,
+                SkillQ: false,
+                SkillE: false,
+                SkillR: false,
+                AimTargetX: 0,
+                AimTargetY: 0
+            );
             simA.Step(input);
             simB.Step(input);
         }
@@ -101,5 +128,58 @@ public class DeterminismTests
             Assert.Equal(simA.Enemies[i].Position, simB.Enemies[i].Position);
             Assert.Equal(simA.Enemies[i].Health, simB.Enemies[i].Health);
         }
+    }
+
+    [Fact]
+    public void PlayerAttack_KillsEnemyAndAwardsDeterministicScore()
+    {
+        // ARRANGE:
+        // Place two simulation instances with identical seeds and wait for first enemy wave
+        var spawnPoint = new SimVector2(500_000, 400_000);
+        var simA = new SimulationWorld(spawnPoint, seed: 99);
+        var simB = new SimulationWorld(spawnPoint, seed: 99);
+
+        for (int tick = 0; tick < 120; tick++)
+        {
+            var idle = new PlayerInput(
+                tick,
+                MoveX: 0,
+                MoveY: 0,
+                Dash: false,
+                Attack: false,
+                SkillQ: false,
+                SkillE: false,
+                SkillR: false,
+                AimTargetX: 0,
+                AimTargetY: 0
+            );
+            simA.Step(idle);
+            simB.Step(idle);
+        }
+
+        Assert.Single(simA.Enemies);
+
+        // ACT: Aim Skill Q shockwave directly at the spawned enemy
+        var targetEnemy = simA.Enemies[0];
+        var attackInput = new PlayerInput(
+            120,
+            MoveX: 0,
+            MoveY: 0,
+            Dash: false,
+            Attack: false,
+            SkillQ: true,
+            SkillE: false,
+            SkillR: false,
+            AimTargetX: targetEnemy.Position.X,
+            AimTargetY: targetEnemy.Position.Y
+        );
+
+        simA.Step(attackInput);
+        simB.Step(attackInput);
+
+        // ASSERT:
+        Assert.Equal(simA.Score, simB.Score);
+        Assert.Equal(simA.Enemies.Count, simB.Enemies.Count);
+        Assert.Equal(simA.Player.Health, simB.Player.Health);
     }
 }
