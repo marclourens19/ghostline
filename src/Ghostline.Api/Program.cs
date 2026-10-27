@@ -19,15 +19,22 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 builder.Services.AddScoped<IReplayVerificationService, ReplayVerificationService>();
 
-// PRIORITY 2: Protect replay re-simulation against CPU exhaustion denial-of-service
+// PRIORITY 2: Protect replay re-simulation against CPU exhaustion denial-of-service (partitioned per client IP)
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-    options.AddFixedWindowLimiter("runs-limiter", opt =>
+    options.AddPolicy("runs-limiter", httpContext =>
     {
-        opt.PermitLimit = 15;
-        opt.Window = TimeSpan.FromMinutes(1);
-        opt.QueueLimit = 0;
+        string clientKey = httpContext.Request.Headers["X-Forwarded-For"].FirstOrDefault()
+            ?? httpContext.Connection.RemoteIpAddress?.ToString()
+            ?? "anonymous";
+
+        return RateLimitPartition.GetFixedWindowLimiter(clientKey, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 15,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0
+        });
     });
 });
 
@@ -192,15 +199,30 @@ app.MapPost("/api/runs", async (
     });
 }).RequireRateLimiting("runs-limiter");
 
-app.MapGet("/api/leaderboard", async (AppDbContext db, int limit = 20) =>
+// Paginated and filterable leaderboard retrieval
+app.MapGet("/api/leaderboard", async (
+    AppDbContext db,
+    int page = 1,
+    int limit = 20,
+    uint? seed = null) =>
 {
     int queryLimit = Math.Clamp(limit, 1, 100);
+    int queryPage = Math.Max(1, page);
+    int skip = (queryPage - 1) * queryLimit;
 
-    var topRuns = await db.Runs
+    var query = db.Runs
         .AsNoTracking()
-        .Where(r => r.IsVerified)
+        .Where(r => r.IsVerified);
+
+    if (seed.HasValue)
+    {
+        query = query.Where(r => r.Seed == seed.Value);
+    }
+
+    var topRuns = await query
         .OrderByDescending(r => r.VerifiedScore)
         .ThenBy(r => r.CreatedAtUtc)
+        .Skip(skip)
         .Take(queryLimit)
         .Select(r => new
         {
@@ -208,6 +230,7 @@ app.MapGet("/api/leaderboard", async (AppDbContext db, int limit = 20) =>
             r.PlayerName,
             Score = r.VerifiedScore,
             r.TotalTicks,
+            r.Seed,
             r.CreatedAtUtc
         })
         .ToListAsync();

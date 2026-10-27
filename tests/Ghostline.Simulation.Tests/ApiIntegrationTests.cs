@@ -11,10 +11,12 @@ namespace Ghostline.Simulation.Tests;
 
 public class ApiIntegrationTests : IClassFixture<GhostlineWebApplicationFactory>
 {
+    private readonly GhostlineWebApplicationFactory _factory;
     private readonly HttpClient _client;
 
     public ApiIntegrationTests(GhostlineWebApplicationFactory factory)
     {
+        _factory = factory;
         _client = factory.CreateClient();
     }
 
@@ -172,7 +174,10 @@ public class ApiIntegrationTests : IClassFixture<GhostlineWebApplicationFactory>
     [Fact]
     public async Task SubmitRun_ExceedingRateLimit_ReturnsTooManyRequests()
     {
-        // ARRANGE: Repeatedly submit requests to exceed the fixed-window limit
+        // ARRANGE: Use a dedicated client with an isolated IP so other tests are not throttled
+        var throttledClient = _factory.CreateClient();
+        throttledClient.DefaultRequestHeaders.Add("X-Forwarded-For", "192.168.1.99");
+
         var spawnPoint = new SimVector2(500_000, 400_000);
         bool hitRateLimit = false;
 
@@ -190,7 +195,7 @@ public class ApiIntegrationTests : IClassFixture<GhostlineWebApplicationFactory>
                 replayBase64 = base64
             };
 
-            var response = await _client.PostAsJsonAsync("/api/runs", request);
+            var response = await throttledClient.PostAsJsonAsync("/api/runs", request);
             if (response.StatusCode == HttpStatusCode.TooManyRequests)
             {
                 hitRateLimit = true;
@@ -200,5 +205,70 @@ public class ApiIntegrationTests : IClassFixture<GhostlineWebApplicationFactory>
 
         // ASSERT: Must eventually reject with 429 Too Many Requests
         Assert.True(hitRateLimit, "Expected the rate limiter to trigger 429 Too Many Requests after exceeding window limit.");
+    }
+
+    [Fact]
+    public async Task GetLeaderboard_WithSeedFilter_ReturnsOnlyMatchingRuns()
+    {
+        // ARRANGE: Submit verified runs with two distinct seeds
+        uint seedTarget = 5555;
+        uint seedOther = 7777;
+        var spawnPoint = new SimVector2(500_000, 400_000);
+
+        // Supply at least 1 input frame so the replay passes authoritative verification
+        var inputs = new List<PlayerInput>
+        {
+            new(Tick: 0, MoveX: 0, MoveY: 0, Dash: false, Attack: false, SkillQ: false, SkillE: false, SkillR: false, AimTargetX: 0, AimTargetY: 0)
+        };
+
+        var targetReplay = new ReplayFile(new ReplayHeader(ReplayFile.CurrentVersion, seedTarget, spawnPoint, inputs.Count), inputs);
+        var otherReplay = new ReplayFile(new ReplayHeader(ReplayFile.CurrentVersion, seedOther, spawnPoint, inputs.Count), inputs);
+
+        var post1 = await _client.PostAsJsonAsync("/api/runs", new
+        {
+            playerName = "TargetSeedUser",
+            claimedScore = 0,
+            seed = seedTarget,
+            replayBase64 = Convert.ToBase64String(targetReplay.Serialize())
+        });
+        Assert.Equal(HttpStatusCode.Created, post1.StatusCode);
+        using var doc1 = JsonDocument.Parse(await post1.Content.ReadAsStringAsync());
+        Assert.True(doc1.RootElement.GetProperty("isVerified").GetBoolean());
+
+        var post2 = await _client.PostAsJsonAsync("/api/runs", new
+        {
+            playerName = "OtherSeedUser",
+            claimedScore = 0,
+            seed = seedOther,
+            replayBase64 = Convert.ToBase64String(otherReplay.Serialize())
+        });
+        Assert.Equal(HttpStatusCode.Created, post2.StatusCode);
+        using var doc2 = JsonDocument.Parse(await post2.Content.ReadAsStringAsync());
+        Assert.True(doc2.RootElement.GetProperty("isVerified").GetBoolean());
+
+        // ACT: Query specifically for seedTarget
+        var response = await _client.GetAsync($"/api/leaderboard?seed={seedTarget}");
+
+        // ASSERT: Only the run matching seedTarget should appear
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        string json = await response.Content.ReadAsStringAsync();
+        Assert.Contains("TargetSeedUser", json);
+        Assert.DoesNotContain("OtherSeedUser", json);
+    }
+
+    [Fact]
+    public async Task GetLeaderboard_WithPagination_HonorsOffsetAndLimit()
+    {
+        // ACT: Query page 1 with limit 1, then page 2 with limit 1
+        var page1 = await _client.GetFromJsonAsync<List<JsonElement>>("/api/leaderboard?page=1&limit=1");
+        var page2 = await _client.GetFromJsonAsync<List<JsonElement>>("/api/leaderboard?page=2&limit=1");
+
+        // ASSERT
+        Assert.NotNull(page1);
+        Assert.NotNull(page2);
+        if (page1.Count > 0 && page2.Count > 0)
+        {
+            Assert.NotEqual(page1[0].GetProperty("id").GetGuid(), page2[0].GetProperty("id").GetGuid());
+        }
     }
 }
