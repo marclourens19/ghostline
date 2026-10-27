@@ -1,9 +1,10 @@
 # Ghostline
 
 [![.NET Core CI](https://github.com/marclourens19/ghostline/actions/workflows/dotnet.yml/badge.svg)](https://github.com/marclourens19/ghostline/actions/workflows/dotnet.yml)
+[![Replay Viewer](https://img.shields.io/badge/Web_Viewer-GitHub_Pages-blue?logo=github)](https://marclourens19.github.io/ghostline/)
 ![License](https://img.shields.io/badge/License-MIT-blue.svg)
 
-![Ghostline Gameplay and Replay Spectator](docs/assets/gameplay.png)
+> **Live Replay Inspector:** [https://marclourens19.github.io/ghostline/](https://marclourens19.github.io/ghostline/) — Drag and drop any `.replay` file to inspect tick telemetry, spatial inputs, and hit calculations directly in the browser.
 
 Ghostline is a top-down 2D arena shooter built to demonstrate **authoritative server-side replay verification** for cheat-proof leaderboards.
 
