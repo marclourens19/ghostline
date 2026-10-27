@@ -1,0 +1,11 @@
+[gd_scene format=3 uid="uid://cqwqdo5lfjy84"]
+
+[ext_resource type="Script" uid="uid://bm7sab1sfsew8" path="res://GameWorld.cs" id="1_5do2m"]
+[ext_resource type="Texture2D" uid="uid://cidmdd57073is" path="res://icon.svg" id="1_e7c1l"]
+
+[node name="GameWorld" type="Node2D" unique_id=767085525]
+script = ExtResource("1_5do2m")
+
+[node name="PlayerVisual" type="Sprite2D" parent="." unique_id=1147671144]
+scale = Vector2(0.4, 0.4)
+texture = ExtResource("1_e7c1l")
