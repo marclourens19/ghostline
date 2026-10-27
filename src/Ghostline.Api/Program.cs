@@ -27,7 +27,14 @@ var app = builder.Build();
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    await db.Database.MigrateAsync();
+    if (db.Database.IsRelational())
+    {
+        await db.Database.MigrateAsync();
+    }
+    else
+    {
+        await db.Database.EnsureCreatedAsync();
+    }
 }
 
 // Always enable developer exception page and Swagger in local dev
@@ -214,3 +221,6 @@ public record SubmitRunRequest(
     uint Seed,
     string ReplayBase64
 );
+
+// Expose Program class for WebApplicationFactory integration testing
+public partial class Program { }
