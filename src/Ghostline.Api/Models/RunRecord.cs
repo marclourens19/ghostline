@@ -1,5 +1,7 @@
 ﻿namespace Ghostline.Api.Models;
 
+using System;
+
 // Database entity representing a completed gameplay run and its verification verdict.
 public class RunRecord
 {
@@ -29,6 +31,9 @@ public class RunRecord
 
     // Raw binary replay payload (GHST format) stored for leaderboard playback
     public byte[] ReplayData { get; set; } = Array.Empty<byte>();
+
+    // SHA-256 hash of the replay data to prevent duplicate score submissions
+    public string ReplayHash { get; set; } = string.Empty;
 
     // Timestamp when the run was submitted
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;

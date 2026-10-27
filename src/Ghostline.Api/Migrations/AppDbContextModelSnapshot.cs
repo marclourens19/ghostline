@@ -46,6 +46,10 @@ namespace Ghostline.Api.Migrations
                         .IsRequired()
                         .HasColumnType("bytea");
 
+                    b.Property<string>("ReplayHash")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<long>("Seed")
                         .HasColumnType("bigint");
 

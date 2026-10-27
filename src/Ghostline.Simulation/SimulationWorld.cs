@@ -1,5 +1,8 @@
 ﻿namespace Ghostline.Simulation;
 
+using System;
+using System.Collections.Generic;
+
 /*
  * Authoritative simulation container.
  * Executes discrete game ticks using deterministic integer arithmetic.
@@ -16,7 +19,7 @@ public class SimulationWorld
 
     // Bullet (Normal Attack) constants
     public const int BulletSpeedPerTick = 12_000;   // 12 visual pixels per tick
-    public const int BulletRadius = 4_000;           // 4 visual pixels
+    public const int BulletRadius = 4_000;            // 4 visual pixels
     public const int BulletDamage = 30;
     public const int BulletLifetimeTicks = 90;       // 1.5 seconds life span
     public const int AttackCooldownDuration = 15;    // 0.25 second cooldown
@@ -42,7 +45,7 @@ public class SimulationWorld
 
     // Enemy constants
     public const int EnemyRadius = 10_000;           // 10 visual pixels
-    public const int EnemySpeedPerTick = 2_000;     // 2 visual pixels per tick (slower than player)
+    public const int EnemySpeedPerTick = 2_000;      // 2 visual pixels per tick (slower than player)
     public const int EnemySpawnCadenceTicks = 120;   // Spawn an enemy every 2 seconds
 
     // Current simulation tick count (starts at 0 and increments every Step)
@@ -230,8 +233,12 @@ public class SimulationWorld
                 if (!enemy.IsAlive) continue;
 
                 int hitDist = EnemyRadius + BulletRadius;
-                if (Math.Abs(nextPos.X - enemy.Position.X) <= hitDist &&
-                    Math.Abs(nextPos.Y - enemy.Position.Y) <= hitDist)
+                long dx = nextPos.X - enemy.Position.X;
+                long dy = nextPos.Y - enemy.Position.Y;
+                long distSq = (dx * dx) + (dy * dy);
+                long hitDistSq = (long)hitDist * hitDist;
+
+                if (distSq <= hitDistSq)
                 {
                     hitTarget = true;
                     int newHp = enemy.Health - proj.Damage;
@@ -332,12 +339,14 @@ public class SimulationWorld
 
             _enemies[i] = enemy with { Position = newEnemyPos };
 
-            // Check collision with player (Manhattan/Axis check for contact)
+            // Check collision with player (True circular distance check)
             int combinedRadius = PlayerRadius + EnemyRadius;
-            int contactDistX = Math.Abs(clampedPosition.X - newEnemyPos.X);
-            int contactDistY = Math.Abs(clampedPosition.Y - newEnemyPos.Y);
+            long contactDx = clampedPosition.X - newEnemyPos.X;
+            long contactDy = clampedPosition.Y - newEnemyPos.Y;
+            long contactDistSq = (contactDx * contactDx) + (contactDy * contactDy);
+            long combinedRadiusSq = (long)combinedRadius * combinedRadius;
 
-            if (contactDistX < combinedRadius && contactDistY < combinedRadius)
+            if (contactDistSq < combinedRadiusSq)
             {
                 incomingDamage += 1; // Deal contact damage per tick
             }

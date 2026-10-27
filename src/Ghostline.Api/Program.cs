@@ -66,8 +66,9 @@ app.MapPost("/api/runs", async (
     AppDbContext db,
     IReplayVerificationService verifier) =>
 {
-    if (string.IsNullOrWhiteSpace(request.PlayerName))
-        return Results.BadRequest(new { error = "PlayerName is required." });
+    // PRIORITY 2: PlayerName content and length validation
+    if (string.IsNullOrWhiteSpace(request.PlayerName) || request.PlayerName.Length > 32)
+        return Results.BadRequest(new { error = "PlayerName is required and must be 32 characters or fewer." });
 
     if (request.ReplayBase64 == null || request.ReplayBase64.Length == 0)
         return Results.BadRequest(new { error = "Replay data is required." });
@@ -99,6 +100,15 @@ app.MapPost("/api/runs", async (
         return Results.BadRequest(new { error = "Request seed does not match the seed embedded in the replay payload." });
     }
 
+    // PRIORITY 2: Reject duplicate replay submissions
+    string replayHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(replayBytes));
+
+    bool isDuplicate = await db.Runs.AnyAsync(r => r.ReplayHash == replayHash);
+    if (isDuplicate)
+    {
+        return Results.Conflict(new { error = "Duplicate submission: This exact replay has already been processed." });
+    }
+
     var result = verifier.Verify(replayBytes, request.ClaimedScore);
 
     var record = new RunRecord
@@ -111,6 +121,7 @@ app.MapPost("/api/runs", async (
         IsVerified = result.IsValid,
         VerificationError = result.ErrorMessage,
         ReplayData = replayBytes,
+        ReplayHash = replayHash,
         CreatedAtUtc = DateTime.UtcNow
     };
 
