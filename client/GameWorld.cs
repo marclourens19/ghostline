@@ -1,6 +1,7 @@
 using Godot;
 using Ghostline.Simulation;
 using System.Collections.Generic;
+using System.IO;
 
 namespace Ghostline.Client;
 
@@ -107,6 +108,12 @@ public partial class GameWorld : Node2D
 
     public override void _Process(double delta)
     {
+        // Export replay file on F6 key press
+        if (Input.IsKeyPressed(Key.F6))
+        {
+            ExportReplay("latest_run.replay");
+        }
+
         // Accumulate elapsed real time, capped at 0.2s to prevent timestep death spirals
         _timeAccumulator = Mathf.Min((float)(_timeAccumulator + delta), 0.2f);
 
@@ -174,5 +181,24 @@ public partial class GameWorld : Node2D
     {
         var (screenX, screenY) = _simulation.Player.Position.ToScreenPixels();
         _playerVisual.Position = new Vector2(screenX, screenY);
+    }
+
+    // Exports the current recorded gameplay session to a binary replay file.
+    // Can be called on player death, game over, or by pressing F6.
+    public void ExportReplay(string filePath)
+    {
+        var spawnPos = SimVector2.FromScreenPixels(500f, 400f);
+        var header = new ReplayHeader(
+            Version: ReplayFile.CurrentVersion,
+            Seed: _simulation.Seed,
+            SpawnPosition: spawnPos,
+            InputCount: _recordedInputs.Count
+        );
+
+        var replay = new ReplayFile(header, _recordedInputs);
+        byte[] data = replay.Serialize();
+
+        File.WriteAllBytes(filePath, data);
+        GD.Print($"Replay successfully exported to: {filePath} ({data.Length} bytes)");
     }
 }
