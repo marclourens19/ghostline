@@ -174,29 +174,16 @@ public class ReplaySerializationTests
     public void Deserialization_ThrowsInvalidDataException_WhenMovementIsOutOfRange()
     {
         // ARRANGE: Construct a malicious payload manually to simulate a speed-hacked client
-        using var ms = new MemoryStream();
-        using var writer = new BinaryWriter(ms);
-
-        writer.Write(new byte[] { (byte)'G', (byte)'H', (byte)'S', (byte)'T' });
-        writer.Write(ReplayFile.CurrentVersion);
-        writer.Write((uint)1337);
-        writer.Write(500_000);
-        writer.Write(400_000);
-        writer.Write(1); // 1 Input frame
-
-        writer.Write(0); // Tick
-        writer.Write((sbyte)127); // Malicious MoveX (Outside -1, 0, 1)
-        writer.Write((sbyte)0);   // MoveY
-        writer.Write(false); // Dash
-        writer.Write(false); // Attack
-        writer.Write(false); // SkillQ
-        writer.Write(false); // SkillE
-        writer.Write(false); // SkillR
-        writer.Write(0); // AimX
-        writer.Write(0); // AimY
+        var spawnPoint = new SimVector2(500_000, 400_000);
+        var maliciousInputs = new List<PlayerInput>
+        {
+            new(Tick: 0, MoveX: 127, MoveY: 0, Dash: false, Attack: false, SkillQ: false, SkillE: false, SkillR: false, AimTargetX: 0, AimTargetY: 0)
+        };
+        var replay = new ReplayFile(new ReplayHeader(ReplayFile.CurrentVersion, 1337, spawnPoint, maliciousInputs.Count), maliciousInputs);
+        byte[] payload = replay.Serialize();
 
         // ACT & ASSERT: Must reject payload before it ever reaches the simulation engine
-        var ex = Assert.Throws<InvalidDataException>(() => ReplayFile.Deserialize(ms.ToArray()));
+        var ex = Assert.Throws<InvalidDataException>(() => ReplayFile.Deserialize(payload));
         Assert.Contains("Invalid movement input", ex.Message);
     }
 
@@ -216,6 +203,36 @@ public class ReplaySerializationTests
 
         // ACT & ASSERT: Must reject payload with InvalidDataException
         var ex = Assert.Throws<InvalidDataException>(() => ReplayFile.Deserialize(ms.ToArray()));
-        Assert.Contains("Replay frame count exceeds", ex.Message);
+        Assert.Contains("exceeds allowed bounds", ex.Message);
+    }
+
+    [Fact]
+    public void Deserialization_ThrowsInvalidDataException_WhenVersionIsUnsupported()
+    {
+        // ARRANGE: Construct a replay with an unsupported future version (e.g., 99)
+        var spawnPoint = new SimVector2(500_000, 400_000);
+        var replay = new ReplayFile(new ReplayHeader(Version: 99, Seed: 1337, spawnPoint, InputCount: 0), Array.Empty<PlayerInput>());
+        byte[] payload = replay.Serialize();
+
+        // ACT & ASSERT: Deserialize() must enforce CurrentVersion check
+        var ex = Assert.Throws<InvalidDataException>(() => ReplayFile.Deserialize(payload));
+        Assert.Contains("Unsupported replay version", ex.Message);
+    }
+
+    [Fact]
+    public void Deserialization_ThrowsInvalidDataException_WhenHeaderIsTruncated()
+    {
+        // ARRANGE: Create a partial header containing only magic bytes, version, and part of the seed (7 bytes instead of 21)
+        byte[] partialHeader = new byte[] { (byte)'G', (byte)'H', (byte)'S', (byte)'T', ReplayFile.CurrentVersion, 0x01, 0x02 };
+
+        // ACT & ASSERT: Truncated header must throw InvalidDataException (not unhandled EndOfStreamException)
+        var ex = Assert.Throws<InvalidDataException>(() => ReplayFile.Deserialize(partialHeader));
+        Assert.Contains("truncated", ex.Message, StringComparison.OrdinalIgnoreCase);
+
+        // Also verify ReplayVerificationService handles it gracefully without throwing
+        var verifier = new ReplayVerificationService();
+        var result = verifier.Verify(partialHeader, claimedScore: 0);
+        Assert.False(result.IsValid);
+        Assert.False(string.IsNullOrWhiteSpace(result.ErrorMessage));
     }
 }

@@ -1,0 +1,6 @@
+﻿**/.vs
+**/.godot
+**/bin
+**/obj
+postgres_data/
+.git/
