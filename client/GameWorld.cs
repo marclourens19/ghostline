@@ -27,6 +27,16 @@ public partial class GameWorld : Node2D
         UpdateVisuals();
     }
 
+    public override void _Draw()
+    {
+        // Draw the arena boundary defined by the simulation
+        var (minX, minY) = new SimVector2(_simulation.Arena.MinX, _simulation.Arena.MinY).ToScreenPixels();
+        var (maxX, maxY) = new SimVector2(_simulation.Arena.MaxX, _simulation.Arena.MaxY).ToScreenPixels();
+
+        var rect = new Rect2(minX, minY, maxX - minX, maxY - minY);
+        DrawRect(rect, Colors.White, filled: false, width: 2.0f);
+    }
+
     public override void _Process(double delta)
     {
         // Accumulate elapsed real time

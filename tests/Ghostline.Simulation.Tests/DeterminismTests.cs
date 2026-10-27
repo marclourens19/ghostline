@@ -51,4 +51,26 @@ public class DeterminismTests
         Assert.Equal(simA.Player.Position, simB.Player.Position);
         Assert.Equal(simA.Player.DashCooldownTicks, simB.Player.DashCooldownTicks);
     }
+
+    [Fact]
+    public void PlayerMovement_IsConstrainedByArenaBoundaries()
+    {
+        // ARRANGE:
+        // Place player near the right wall and attempt to walk past it for 300 ticks
+        var arena = ArenaConfig.CreateDefault();
+        var spawnPoint = new SimVector2(arena.MaxX - 5_000, 300_000);
+        var sim = new SimulationWorld(spawnPoint, arena);
+
+        // ACT:
+        // Continuously send Right (MoveX = 1) inputs
+        for (int tick = 0; tick < 300; tick++)
+        {
+            sim.Step(new PlayerInput(tick, MoveX: 1, MoveY: 0, Dash: false, Attack: false));
+        }
+
+        // ASSERT:
+        // Position X must not exceed MaxX - PlayerRadius
+        int expectedMaxAllowedX = arena.MaxX - SimulationWorld.PlayerRadius;
+        Assert.Equal(expectedMaxAllowedX, sim.Player.Position.X);
+    }
 }
