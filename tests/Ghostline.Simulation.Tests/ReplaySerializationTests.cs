@@ -1,5 +1,6 @@
 ﻿using System.IO;
 using Xunit;
+using Ghostline.Api.Services;
 
 namespace Ghostline.Simulation.Tests;
 
@@ -105,5 +106,65 @@ public class ReplaySerializationTests
         Assert.Equal(liveSim.Player.Health, verifySim.Player.Health);
         Assert.Equal(liveSim.Player.Shield, verifySim.Player.Shield);
         Assert.Equal(liveSim.Enemies.Count, verifySim.Enemies.Count);
+    }
+
+    [Fact]
+    public void ReplayVerification_ApprovesMatchingScoreAndValidInputs()
+    {
+        // ARRANGE: Generate an authoritative match run
+        uint seed = 777;
+        var spawnPoint = new SimVector2(500_000, 400_000);
+        var sim = new SimulationWorld(spawnPoint, seed: seed);
+        var inputs = new List<PlayerInput>();
+
+        // 120 ticks: Enemy spawns at 120 and gets hit by Q shockwave
+        for (int tick = 0; tick < 120; tick++)
+        {
+            var input = new PlayerInput(tick, 0, 0, false, false, false, false, false, 0, 0);
+            inputs.Add(input);
+            sim.Step(input);
+        }
+
+        var attackInput = new PlayerInput(120, 0, 0, false, false, SkillQ: true, false, false, sim.Enemies[0].Position.X, sim.Enemies[0].Position.Y);
+        inputs.Add(attackInput);
+        sim.Step(attackInput);
+
+        int actualScore = sim.Score;
+        var replay = new ReplayFile(new ReplayHeader(1, seed, spawnPoint, inputs.Count), inputs);
+        byte[] payload = replay.Serialize();
+
+        // ACT: Run through verification service
+        var verifier = new ReplayVerificationService();
+        var result = verifier.Verify(payload, claimedScore: actualScore);
+
+        // ASSERT:
+        Assert.True(result.IsValid);
+        Assert.Equal(actualScore, result.AuthoritativeScore);
+        Assert.Null(result.ErrorMessage);
+    }
+
+    [Fact]
+    public void ReplayVerification_RejectsCheatedScoreClaim()
+    {
+        // ARRANGE: Live run finishes with actual score of 0
+        uint seed = 777;
+        var spawnPoint = new SimVector2(500_000, 400_000);
+        var inputs = new List<PlayerInput>
+        {
+            new(0, 0, 0, false, false, false, false, false, 0, 0),
+            new(1, 0, 0, false, false, false, false, false, 0, 0)
+        };
+
+        var replay = new ReplayFile(new ReplayHeader(1, seed, spawnPoint, inputs.Count), inputs);
+        byte[] payload = replay.Serialize();
+
+        // ACT: Client claims a fake score of 999999
+        var verifier = new ReplayVerificationService();
+        var result = verifier.Verify(payload, claimedScore: 999_999);
+
+        // ASSERT: Must fail validation with score mismatch
+        Assert.False(result.IsValid);
+        Assert.Equal(0, result.AuthoritativeScore);
+        Assert.Contains("Score mismatch", result.ErrorMessage);
     }
 }
