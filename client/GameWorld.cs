@@ -7,11 +7,14 @@ using System.Text.Json;
 
 namespace Ghostline.Client;
 
+public record LeaderboardItem(Guid Id, string PlayerName, int Score, int TotalTicks, DateTime CreatedAtUtc);
+
 public partial class GameWorld : Node2D
 {
     // Node references
     private Sprite2D _playerVisual = null!;
     private HttpRequest _http = null!;
+    private HttpRequest _leaderboardHttp = null!;
 
     // Authoritative headless simulation instance
     private SimulationWorld _simulation = null!;
@@ -23,11 +26,17 @@ public partial class GameWorld : Node2D
     // In-memory replay buffer: captures authoritative run inputs for server verification
     private readonly List<PlayerInput> _recordedInputs = new();
     private bool _showSkillQEffect;
-    private string _submissionStatus = "Press F6: Export Replay | Press F7: Submit to Leaderboard";
+    private string _submissionStatus = "Press F6: Export Replay | Press F7: Submit to Leaderboard | Press Tab / L: Toggle Leaderboard";
     private bool _isSubmitting;
+
+    // Leaderboard state
+    private bool _showLeaderboard;
+    private readonly List<LeaderboardItem> _leaderboardEntries = new();
+    private bool _isLoadingLeaderboard;
 
     // Default backend endpoint (adjust port if launchSettings.json specifies another, e.g., 5194)
     private const string ApiEndpoint = "http://localhost:5000/api/runs";
+    private const string ApiLeaderboardEndpoint = "http://localhost:5000/api/leaderboard?limit=10";
 
     public override void _Ready()
     {
@@ -38,12 +47,37 @@ public partial class GameWorld : Node2D
         AddChild(_http);
         _http.RequestCompleted += OnHttpRequestCompleted;
 
+        // Set up HTTP Request node for fetching leaderboard
+        _leaderboardHttp = new HttpRequest();
+        AddChild(_leaderboardHttp);
+        _leaderboardHttp.RequestCompleted += OnLeaderboardCompleted;
+
         // Spawn player near center of default arena (500, 400) screen pixels with a deterministic seed
         var spawnPosition = SimVector2.FromScreenPixels(500f, 400f);
         _simulation = new SimulationWorld(spawnPosition, seed: 1337);
 
         // Position the visual immediately at spawn
         UpdateVisuals();
+
+        // Initial leaderboard fetch
+        FetchLeaderboard();
+    }
+
+    public override void _UnhandledInput(InputEvent @event)
+    {
+        // Toggle Leaderboard cleanly on single key down (ignoring repeat/echo frames)
+        if (@event is InputEventKey keyEvent && keyEvent.Pressed && !keyEvent.Echo)
+        {
+            if (keyEvent.Keycode == Key.Tab || keyEvent.Keycode == Key.L)
+            {
+                _showLeaderboard = !_showLeaderboard;
+                if (_showLeaderboard)
+                {
+                    FetchLeaderboard();
+                }
+                QueueRedraw();
+            }
+        }
     }
 
     public override void _Draw()
@@ -118,6 +152,58 @@ public partial class GameWorld : Node2D
                          $"{_submissionStatus}";
 
         DrawString(ThemeDB.FallbackFont, new Vector2(minX + 15, minY + 30), hudText, HorizontalAlignment.Left, -1, 14, Colors.White);
+
+        // 8. Render Leaderboard Overlay if active
+        if (_showLeaderboard)
+        {
+            DrawLeaderboardOverlay(minX, minY, maxX - minX, maxY - minY);
+        }
+    }
+
+    private void DrawLeaderboardOverlay(float arenaX, float arenaY, float arenaWidth, float arenaHeight)
+    {
+        // Darkened background panel centered in arena
+        float panelWidth = 480f;
+        float panelHeight = 360f;
+        float panelX = arenaX + (arenaWidth - panelWidth) * 0.5f;
+        float panelY = arenaY + (arenaHeight - panelHeight) * 0.5f;
+
+        var panelRect = new Rect2(panelX, panelY, panelWidth, panelHeight);
+        DrawRect(panelRect, new Color(0.05f, 0.05f, 0.1f, 0.88f), filled: true);
+        DrawRect(panelRect, Colors.Cyan, filled: false, width: 2.0f);
+
+        // Header
+        string title = "=== AUTHORITATIVE LEADERBOARD ===";
+        DrawString(ThemeDB.FallbackFont, new Vector2(panelX + 20, panelY + 35), title, HorizontalAlignment.Left, -1, 16, Colors.Gold);
+
+        if (_isLoadingLeaderboard)
+        {
+            DrawString(ThemeDB.FallbackFont, new Vector2(panelX + 20, panelY + 80), "Loading top runs...", HorizontalAlignment.Left, -1, 14, Colors.Silver);
+            return;
+        }
+
+        if (_leaderboardEntries.Count == 0)
+        {
+            DrawString(ThemeDB.FallbackFont, new Vector2(panelX + 20, panelY + 80), "No verified runs logged yet. Press F7 to submit your run!", HorizontalAlignment.Left, -1, 13, Colors.Silver);
+            return;
+        }
+
+        // Column Titles
+        string columns = "RANK   PLAYER          SCORE       SURVIVED";
+        DrawString(ThemeDB.FallbackFont, new Vector2(panelX + 20, panelY + 70), columns, HorizontalAlignment.Left, -1, 13, Colors.Cyan);
+
+        // Entry rows
+        float yOffset = panelY + 100;
+        for (int i = 0; i < _leaderboardEntries.Count && i < 10; i++)
+        {
+            var entry = _leaderboardEntries[i];
+            float seconds = entry.TotalTicks / (float)SimulationWorld.TicksPerSecond;
+            string row = $"#{i + 1,-5} {entry.PlayerName,-15} {entry.Score,-11} {seconds:F1}s";
+
+            Color rowColor = i == 0 ? Colors.Yellow : (i < 3 ? Colors.LightSkyBlue : Colors.White);
+            DrawString(ThemeDB.FallbackFont, new Vector2(panelX + 20, yOffset), row, HorizontalAlignment.Left, -1, 13, rowColor);
+            yOffset += 24;
+        }
     }
 
     public override void _Process(double delta)
@@ -266,6 +352,13 @@ public partial class GameWorld : Node2D
         }
     }
 
+    // Fetches top runs from the backend leaderboard endpoint.
+    public void FetchLeaderboard()
+    {
+        _isLoadingLeaderboard = true;
+        _leaderboardHttp.Request(ApiLeaderboardEndpoint);
+    }
+
     private void OnHttpRequestCompleted(long result, long responseCode, string[] headers, byte[] body)
     {
         _isSubmitting = false;
@@ -282,11 +375,42 @@ public partial class GameWorld : Node2D
             _submissionStatus = isVerified
                 ? $"Verified by Server: Score {verifiedScore}"
                 : "Rejected: Replay diverged from server simulation!";
+
+            // Refresh leaderboard to include newly verified run
+            FetchLeaderboard();
         }
         else
         {
             _submissionStatus = $"Submission Failed: HTTP {responseCode}";
             GD.PrintErr($"Run submission failed with status code {responseCode}");
+        }
+    }
+
+    private void OnLeaderboardCompleted(long result, long responseCode, string[] headers, byte[] body)
+    {
+        _isLoadingLeaderboard = false;
+
+        if (responseCode == 200)
+        {
+            string json = System.Text.Encoding.UTF8.GetString(body);
+            using var doc = JsonDocument.Parse(json);
+
+            _leaderboardEntries.Clear();
+            foreach (var el in doc.RootElement.EnumerateArray())
+            {
+                var entry = new LeaderboardItem(
+                    Id: el.GetProperty("id").GetGuid(),
+                    PlayerName: el.GetProperty("playerName").GetString() ?? "Unknown",
+                    Score: el.GetProperty("score").GetInt32(),
+                    TotalTicks: el.GetProperty("totalTicks").GetInt32(),
+                    CreatedAtUtc: el.GetProperty("createdAtUtc").GetDateTime()
+                );
+                _leaderboardEntries.Add(entry);
+            }
+        }
+        else
+        {
+            GD.PrintErr($"Failed to load leaderboard: HTTP {responseCode}");
         }
     }
 }
