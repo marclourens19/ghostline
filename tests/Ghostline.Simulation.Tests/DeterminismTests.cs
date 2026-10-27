@@ -73,4 +73,33 @@ public class DeterminismTests
         int expectedMaxAllowedX = arena.MaxX - SimulationWorld.PlayerRadius;
         Assert.Equal(expectedMaxAllowedX, sim.Player.Position.X);
     }
+
+    [Fact]
+    public void SeededEnemySpawns_ProduceIdenticalStateAcrossInstances()
+    {
+        // ARRANGE: Two simulation instances running identical seeds
+        uint seed = 42;
+        var spawnPoint = new SimVector2(500_000, 400_000);
+        var simA = new SimulationWorld(spawnPoint, seed: seed);
+        var simB = new SimulationWorld(spawnPoint, seed: seed);
+
+        // ACT: Run 300 ticks with idle inputs to allow multiple enemy spawn waves
+        for (int tick = 0; tick < 300; tick++)
+        {
+            var input = new PlayerInput(tick, 0, 0, false, false);
+            simA.Step(input);
+            simB.Step(input);
+        }
+
+        // ASSERT: Enemies count and positions must match identically
+        Assert.True(simA.Enemies.Count > 0);
+        Assert.Equal(simA.Enemies.Count, simB.Enemies.Count);
+
+        for (int i = 0; i < simA.Enemies.Count; i++)
+        {
+            Assert.Equal(simA.Enemies[i].Id, simB.Enemies[i].Id);
+            Assert.Equal(simA.Enemies[i].Position, simB.Enemies[i].Position);
+            Assert.Equal(simA.Enemies[i].Health, simB.Enemies[i].Health);
+        }
+    }
 }

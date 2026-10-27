@@ -19,9 +19,9 @@ public partial class GameWorld : Node2D
     {
         _playerVisual = GetNode<Sprite2D>("PlayerVisual");
 
-        // Spawn player at (300, 300) screen pixels
-        var spawnPosition = SimVector2.FromScreenPixels(300f, 300f);
-        _simulation = new SimulationWorld(spawnPosition);
+        // Spawn player at (500, 400) screen pixels with a deterministic seed
+        var spawnPosition = SimVector2.FromScreenPixels(500f, 400f);
+        _simulation = new SimulationWorld(spawnPosition, seed: 1337);
 
         // Position the visual immediately at spawn
         UpdateVisuals();
@@ -29,18 +29,28 @@ public partial class GameWorld : Node2D
 
     public override void _Draw()
     {
-        // Draw the arena boundary defined by the simulation
+        // 1. Draw the arena boundary defined by the simulation
         var (minX, minY) = new SimVector2(_simulation.Arena.MinX, _simulation.Arena.MinY).ToScreenPixels();
         var (maxX, maxY) = new SimVector2(_simulation.Arena.MaxX, _simulation.Arena.MaxY).ToScreenPixels();
 
         var rect = new Rect2(minX, minY, maxX - minX, maxY - minY);
         DrawRect(rect, Colors.White, filled: false, width: 2.0f);
+
+        // 2. Draw enemies
+        foreach (var enemy in _simulation.Enemies)
+        {
+            if (!enemy.IsAlive) continue;
+
+            var (ex, ey) = enemy.Position.ToScreenPixels();
+            float radius = SimulationWorld.EnemyRadius / 1000f;
+            DrawCircle(new Vector2(ex, ey), radius, Colors.Crimson);
+        }
     }
 
     public override void _Process(double delta)
     {
-        // Accumulate elapsed real time
-        _timeAccumulator += delta;
+        // Accumulate elapsed real time, capped at 0.2s to prevent timestep death spirals
+        _timeAccumulator = Mathf.Min((float)(_timeAccumulator + delta), 0.2f);
 
         /* 
          * Run fixed simulation steps whenever enough time has passed.
@@ -56,6 +66,9 @@ public partial class GameWorld : Node2D
 
         // Render authoritative simulation state to screen
         UpdateVisuals();
+
+        // Trigger _Draw() each frame to update moving entities
+        QueueRedraw();
     }
 
     private PlayerInput PollInput(int currentTick)
