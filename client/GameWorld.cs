@@ -9,12 +9,19 @@ namespace Ghostline.Client;
 
 public record LeaderboardItem(Guid Id, string PlayerName, int Score, int TotalTicks, DateTime CreatedAtUtc);
 
+public enum GameMode
+{
+    LivePlay,
+    GhostPlayback
+}
+
 public partial class GameWorld : Node2D
 {
     // Node references
     private Sprite2D _playerVisual = null!;
     private HttpRequest _http = null!;
     private HttpRequest _leaderboardHttp = null!;
+    private HttpRequest _replayHttp = null!;
 
     // Authoritative headless simulation instance
     private SimulationWorld _simulation = null!;
@@ -26,7 +33,7 @@ public partial class GameWorld : Node2D
     // In-memory replay buffer: captures authoritative run inputs for server verification
     private readonly List<PlayerInput> _recordedInputs = new();
     private bool _showSkillQEffect;
-    private string _submissionStatus = "Press F6: Export Replay | Press F7: Submit to Leaderboard | Press Tab / L: Toggle Leaderboard";
+    private string _submissionStatus = "F6: Export | F7: Submit | F8: Watch Replay | Tab/L: Leaderboard";
     private bool _isSubmitting;
 
     // Leaderboard state
@@ -34,12 +41,29 @@ public partial class GameWorld : Node2D
     private readonly List<LeaderboardItem> _leaderboardEntries = new();
     private bool _isLoadingLeaderboard;
 
-    // Default backend endpoint (adjust port if launchSettings.json specifies another, e.g., 5194)
-    private const string ApiEndpoint = "http://localhost:5000/api/runs";
-    private const string ApiLeaderboardEndpoint = "http://localhost:5000/api/leaderboard?limit=10";
+    // Ghost Playback State
+    private GameMode _currentMode = GameMode.LivePlay;
+    private ReplayFile? _activeReplay;
+    private int _playbackIndex;
+    private bool _isPlaybackPaused;
+
+    // Configurable backend endpoints
+    private string _apiBaseUrl = "";
+    private string _apiRunsEndpoint = "";
+    private string _apiLeaderboardEndpoint = "";
 
     public override void _Ready()
     {
+        // Allow overriding the backend URL via environment variable for production builds
+        _apiBaseUrl = OS.GetEnvironment("GHOSTLINE_API_URL");
+        if (string.IsNullOrWhiteSpace(_apiBaseUrl))
+        {
+            _apiBaseUrl = "http://localhost:5000";
+        }
+
+        _apiRunsEndpoint = $"{_apiBaseUrl}/api/runs";
+        _apiLeaderboardEndpoint = $"{_apiBaseUrl}/api/leaderboard?limit=10";
+
         _playerVisual = GetNode<Sprite2D>("PlayerVisual");
 
         // Set up HTTP Request node for backend communication
@@ -52,22 +76,52 @@ public partial class GameWorld : Node2D
         AddChild(_leaderboardHttp);
         _leaderboardHttp.RequestCompleted += OnLeaderboardCompleted;
 
-        // Spawn player near center of default arena (500, 400) screen pixels with a deterministic seed
-        var spawnPosition = SimVector2.FromScreenPixels(500f, 400f);
-        _simulation = new SimulationWorld(spawnPosition, seed: 1337);
+        // Set up HTTP Request node for downloading replay files
+        _replayHttp = new HttpRequest();
+        AddChild(_replayHttp);
+        _replayHttp.RequestCompleted += OnReplayDownloaded;
 
-        // Position the visual immediately at spawn
-        UpdateVisuals();
+        // Spawn player near center of default arena (500, 400) screen pixels with a deterministic seed
+        StartLiveGame(seed: 1337);
 
         // Initial leaderboard fetch
         FetchLeaderboard();
     }
 
+    private void StartLiveGame(uint seed)
+    {
+        _currentMode = GameMode.LivePlay;
+        _recordedInputs.Clear();
+        _timeAccumulator = 0;
+
+        var spawnPosition = SimVector2.FromScreenPixels(500f, 400f);
+        _simulation = new SimulationWorld(spawnPosition, seed: seed);
+        _playerVisual.Modulate = Colors.White;
+        UpdateVisuals();
+    }
+
+    public void StartGhostPlayback(ReplayFile replay)
+    {
+        _activeReplay = replay;
+        _playbackIndex = 0;
+        _isPlaybackPaused = false;
+        _currentMode = GameMode.GhostPlayback;
+        _timeAccumulator = 0;
+
+        // Recreate world from authoritative replay header
+        _simulation = new SimulationWorld(replay.Header.SpawnPosition, seed: replay.Header.Seed);
+
+        // Semi-transparent ghost styling for player visual
+        _playerVisual.Modulate = new Color(0.4f, 0.9f, 1.0f, 0.65f);
+        _submissionStatus = "REPLAY MODE: Space: Pause/Resume | Backspace: Return to Live Game";
+        UpdateVisuals();
+    }
+
     public override void _UnhandledInput(InputEvent @event)
     {
-        // Toggle Leaderboard cleanly on single key down (ignoring repeat/echo frames)
         if (@event is InputEventKey keyEvent && keyEvent.Pressed && !keyEvent.Echo)
         {
+            // Toggle Leaderboard
             if (keyEvent.Keycode == Key.Tab || keyEvent.Keycode == Key.L)
             {
                 _showLeaderboard = !_showLeaderboard;
@@ -76,6 +130,38 @@ public partial class GameWorld : Node2D
                     FetchLeaderboard();
                 }
                 QueueRedraw();
+            }
+
+            // F8: Watch latest local replay in Ghost Mode
+            if (keyEvent.Keycode == Key.F8)
+            {
+                if (_currentMode == GameMode.GhostPlayback)
+                {
+                    StartLiveGame(1337);
+                }
+                else if (File.Exists("latest_run.replay"))
+                {
+                    byte[] data = File.ReadAllBytes("latest_run.replay");
+                    var replay = ReplayFile.Deserialize(data);
+                    StartGhostPlayback(replay);
+                }
+                else
+                {
+                    _submissionStatus = "No latest_run.replay file found. Press F6 to save one first!";
+                }
+            }
+
+            // Ghost Mode Controls
+            if (_currentMode == GameMode.GhostPlayback)
+            {
+                if (keyEvent.Keycode == Key.Space)
+                {
+                    _isPlaybackPaused = !_isPlaybackPaused;
+                }
+                else if (keyEvent.Keycode == Key.Backspace || keyEvent.Keycode == Key.Escape)
+                {
+                    StartLiveGame(1337);
+                }
             }
         }
     }
@@ -87,7 +173,7 @@ public partial class GameWorld : Node2D
         var (maxX, maxY) = new SimVector2(_simulation.Arena.MaxX, _simulation.Arena.MaxY).ToScreenPixels();
 
         var rect = new Rect2(minX, minY, maxX - minX, maxY - minY);
-        DrawRect(rect, Colors.White, filled: false, width: 2.0f);
+        DrawRect(rect, _currentMode == GameMode.GhostPlayback ? Colors.DodgerBlue : Colors.White, filled: false, width: 2.0f);
 
         var (px, py) = _simulation.Player.Position.ToScreenPixels();
         var playerCenter = new Vector2(px, py);
@@ -142,7 +228,12 @@ public partial class GameWorld : Node2D
         float eCd = _simulation.Player.ShieldCooldownTicks / (float)SimulationWorld.TicksPerSecond;
         float rCd = _simulation.Player.RCooldownTicks / (float)SimulationWorld.TicksPerSecond;
 
-        string hudText = $"Health: {_simulation.Player.Health}/{_simulation.Player.MaxHealth} | Shield: {_simulation.Player.Shield}\n" +
+        string modeTag = _currentMode == GameMode.GhostPlayback
+            ? $"*** REPLAY SPECTATOR [ {(_isPlaybackPaused ? "PAUSED" : "PLAYING")} ] ***\nProgress: {_playbackIndex}/{_activeReplay?.Inputs.Count ?? 0} ticks\n"
+            : "";
+
+        string hudText = $"{modeTag}" +
+                         $"Health: {_simulation.Player.Health}/{_simulation.Player.MaxHealth} | Shield: {_simulation.Player.Shield}\n" +
                          $"Score: {_simulation.Score} | Tick: {_simulation.CurrentTick}\n" +
                          $"Attack (LMB): Fire Bullet\n" +
                          $"[Q] Shockwave: {(qCd > 0 ? $"{qCd:F1}s" : "READY")}\n" +
@@ -151,7 +242,7 @@ public partial class GameWorld : Node2D
                          $"Recorded Inputs: {_recordedInputs.Count}\n" +
                          $"{_submissionStatus}";
 
-        DrawString(ThemeDB.FallbackFont, new Vector2(minX + 15, minY + 30), hudText, HorizontalAlignment.Left, -1, 14, Colors.White);
+        DrawString(ThemeDB.FallbackFont, new Vector2(minX + 15, minY + 30), hudText, HorizontalAlignment.Left, -1, 14, _currentMode == GameMode.GhostPlayback ? Colors.Cyan : Colors.White);
 
         // 8. Render Leaderboard Overlay if active
         if (_showLeaderboard)
@@ -209,13 +300,13 @@ public partial class GameWorld : Node2D
     public override void _Process(double delta)
     {
         // Export replay file on F6 key press
-        if (Input.IsKeyPressed(Key.F6))
+        if (Input.IsKeyPressed(Key.F6) && _currentMode == GameMode.LivePlay)
         {
             ExportReplay("latest_run.replay");
         }
 
         // F7: Submit replay to backend for authoritative verification
-        if (Input.IsKeyPressed(Key.F7) && !_isSubmitting)
+        if (Input.IsKeyPressed(Key.F7) && !_isSubmitting && _currentMode == GameMode.LivePlay)
         {
             SubmitRun();
         }
@@ -230,15 +321,39 @@ public partial class GameWorld : Node2D
          */
         while (_timeAccumulator >= SecondsPerTick)
         {
-            PlayerInput input = PollInput(_simulation.CurrentTick);
-            _recordedInputs.Add(input);
-
-            if (input.SkillQ && _simulation.Player.QCooldownTicks == 0)
+            if (_currentMode == GameMode.LivePlay)
             {
-                _showSkillQEffect = true;
+                PlayerInput input = PollInput(_simulation.CurrentTick);
+                _recordedInputs.Add(input);
+
+                if (input.SkillQ && _simulation.Player.QCooldownTicks == 0)
+                {
+                    _showSkillQEffect = true;
+                }
+
+                _simulation.Step(input);
+            }
+            else if (_currentMode == GameMode.GhostPlayback && !_isPlaybackPaused)
+            {
+                // Playback authoritative replay input stream
+                if (_activeReplay != null && _playbackIndex < _activeReplay.Inputs.Count)
+                {
+                    PlayerInput replayInput = _activeReplay.Inputs[_playbackIndex];
+                    if (replayInput.SkillQ && _simulation.Player.QCooldownTicks == 0)
+                    {
+                        _showSkillQEffect = true;
+                    }
+
+                    _simulation.Step(replayInput);
+                    _playbackIndex++;
+                }
+                else
+                {
+                    _isPlaybackPaused = true;
+                    _submissionStatus = "Replay Completed! Press Space to restart or Backspace to exit.";
+                }
             }
 
-            _simulation.Step(input);
             _timeAccumulator -= SecondsPerTick;
         }
 
@@ -344,7 +459,7 @@ public partial class GameWorld : Node2D
         string json = JsonSerializer.Serialize(requestBody);
         string[] headers = new[] { "Content-Type: application/json" };
 
-        Error err = _http.Request(ApiEndpoint, headers, HttpClient.Method.Post, json);
+        Error err = _http.Request(_apiRunsEndpoint, headers, HttpClient.Method.Post, json);
         if (err != Error.Ok)
         {
             _submissionStatus = $"HTTP Error: Failed to initiate request ({err})";
@@ -356,7 +471,15 @@ public partial class GameWorld : Node2D
     public void FetchLeaderboard()
     {
         _isLoadingLeaderboard = true;
-        _leaderboardHttp.Request(ApiLeaderboardEndpoint);
+        _leaderboardHttp.Request(_apiLeaderboardEndpoint);
+    }
+
+    // Fetches and launches a replay download from the backend by RunId.
+    public void DownloadAndPlayReplay(Guid runId)
+    {
+        _submissionStatus = $"Downloading replay {runId}...";
+        string endpoint = $"{_apiBaseUrl}/api/runs/{runId}/replay";
+        _replayHttp.Request(endpoint);
     }
 
     private void OnHttpRequestCompleted(long result, long responseCode, string[] headers, byte[] body)
@@ -411,6 +534,27 @@ public partial class GameWorld : Node2D
         else
         {
             GD.PrintErr($"Failed to load leaderboard: HTTP {responseCode}");
+        }
+    }
+
+    private void OnReplayDownloaded(long result, long responseCode, string[] headers, byte[] body)
+    {
+        if (responseCode == 200 && body.Length > 0)
+        {
+            try
+            {
+                var replay = ReplayFile.Deserialize(body);
+                StartGhostPlayback(replay);
+            }
+            catch (Exception ex)
+            {
+                _submissionStatus = $"Replay corrupted: {ex.Message}";
+                GD.PrintErr($"Failed to deserialize downloaded replay: {ex}");
+            }
+        }
+        else
+        {
+            _submissionStatus = $"Replay download failed: HTTP {responseCode}";
         }
     }
 }

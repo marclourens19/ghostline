@@ -4,7 +4,7 @@ services:
     container_name: ghostline_postgres
     environment:
       POSTGRES_USER: ghostline_dev
-      POSTGRES_PASSWORD: dev_password_123!
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ghostline
     ports:
       - "5432:5432"
@@ -22,7 +22,7 @@ services:
       dockerfile: src/Ghostline.Api/Dockerfile
     container_name: ghostline_api
     environment:
-      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=ghostline;Username=ghostline_dev;Password=dev_password_123!
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=ghostline;Username=ghostline_dev;Password=${POSTGRES_PASSWORD}
       - ASPNETCORE_ENVIRONMENT=Production
     ports:
       - "5000:8080"
