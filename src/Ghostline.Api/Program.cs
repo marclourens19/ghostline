@@ -1,7 +1,10 @@
 using Ghostline.Api.Data;
 using Ghostline.Api.Models;
 using Ghostline.Api.Services;
+using Ghostline.Simulation;
 using Microsoft.EntityFrameworkCore;
+using System.IO;
+using System;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -20,15 +23,26 @@ builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
+// Automatically apply pending EF Core migrations on application startup
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await db.Database.MigrateAsync();
+}
+
 // Always enable developer exception page and Swagger in local dev
-app.UseDeveloperExceptionPage();
-app.UseSwagger();
-app.UseSwaggerUI();
+// PRIORITY 2: Enable detailed error pages only in development.
+if (app.Environment.IsDevelopment())
+{
+    app.UseDeveloperExceptionPage();
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
 
 // 3. API Endpoints
 
 // Diagnostic test endpoint to verify raw PostgreSQL connection and table state
-app.MapGet("/api/health/db", async (AppDbContext db) =>
+app.MapGet("/api/health/db", async (AppDbContext db, IWebHostEnvironment env) =>
 {
     try
     {
@@ -38,8 +52,9 @@ app.MapGet("/api/health/db", async (AppDbContext db) =>
     }
     catch (Exception ex)
     {
+        // PRIORITY 2: Return generic production errors with an appropriate request identifier.
         return Results.Problem(
-            detail: ex.ToString(),
+            detail: env.IsDevelopment() ? ex.ToString() : "A database connection error occurred.",
             title: "Database Connection Failed",
             statusCode: 500
         );
@@ -67,6 +82,23 @@ app.MapPost("/api/runs", async (
         return Results.BadRequest(new { error = "Invalid Base64 format for ReplayBase64." });
     }
 
+    // PRIORITY 1 & 2: Reject malformed data and derive seed from the replay itself.
+    ReplayFile replay;
+    try
+    {
+        replay = ReplayFile.Deserialize(replayBytes);
+    }
+    catch (InvalidDataException ex)
+    {
+        return Results.BadRequest(new { error = $"Invalid replay payload: {ex.Message}" });
+    }
+
+    // PRIORITY 2: Reject mismatched seeds.
+    if (request.Seed != replay.Header.Seed)
+    {
+        return Results.BadRequest(new { error = "Request seed does not match the seed embedded in the replay payload." });
+    }
+
     var result = verifier.Verify(replayBytes, request.ClaimedScore);
 
     var record = new RunRecord
@@ -75,7 +107,7 @@ app.MapPost("/api/runs", async (
         ClaimedScore = request.ClaimedScore,
         VerifiedScore = result.AuthoritativeScore,
         TotalTicks = result.AuthoritativeTicks,
-        Seed = request.Seed,
+        Seed = replay.Header.Seed,
         IsVerified = result.IsValid,
         VerificationError = result.ErrorMessage,
         ReplayData = replayBytes,

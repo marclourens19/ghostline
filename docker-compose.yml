@@ -16,5 +16,19 @@ services:
       timeout: 5s
       retries: 5
 
+  ghostline_api:
+    build:
+      context: .
+      dockerfile: src/Ghostline.Api/Dockerfile
+    container_name: ghostline_api
+    environment:
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=ghostline;Username=ghostline_dev;Password=dev_password_123!
+      - ASPNETCORE_ENVIRONMENT=Production
+    ports:
+      - "5000:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   postgres_data:
