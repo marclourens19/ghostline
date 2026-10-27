@@ -168,4 +168,37 @@ public class ApiIntegrationTests : IClassFixture<GhostlineWebApplicationFactory>
         string body = await secondResponse.Content.ReadAsStringAsync();
         Assert.Contains("Duplicate submission", body);
     }
+
+    [Fact]
+    public async Task SubmitRun_ExceedingRateLimit_ReturnsTooManyRequests()
+    {
+        // ARRANGE: Repeatedly submit requests to exceed the fixed-window limit
+        var spawnPoint = new SimVector2(500_000, 400_000);
+        bool hitRateLimit = false;
+
+        for (int i = 0; i < 25; i++)
+        {
+            uint seed = (uint)(20000 + i);
+            var replay = new ReplayFile(new ReplayHeader(1, seed, spawnPoint, 0), Array.Empty<PlayerInput>());
+            string base64 = Convert.ToBase64String(replay.Serialize());
+
+            var request = new
+            {
+                playerName = $"User{i}",
+                claimedScore = 0,
+                seed = seed,
+                replayBase64 = base64
+            };
+
+            var response = await _client.PostAsJsonAsync("/api/runs", request);
+            if (response.StatusCode == HttpStatusCode.TooManyRequests)
+            {
+                hitRateLimit = true;
+                break;
+            }
+        }
+
+        // ASSERT: Must eventually reject with 429 Too Many Requests
+        Assert.True(hitRateLimit, "Expected the rate limiter to trigger 429 Too Many Requests after exceeding window limit.");
+    }
 }

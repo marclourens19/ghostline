@@ -2,8 +2,10 @@ using Ghostline.Api.Data;
 using Ghostline.Api.Models;
 using Ghostline.Api.Services;
 using Ghostline.Simulation;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using System.IO;
+using System.Threading.RateLimiting;
 using System;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -16,6 +18,18 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(connectionString));
 
 builder.Services.AddScoped<IReplayVerificationService, ReplayVerificationService>();
+
+// PRIORITY 2: Protect replay re-simulation against CPU exhaustion denial-of-service
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddFixedWindowLimiter("runs-limiter", opt =>
+    {
+        opt.PermitLimit = 15;
+        opt.Window = TimeSpan.FromMinutes(1);
+        opt.QueueLimit = 0;
+    });
+});
 
 // 2. OpenAPI / Swagger Setup
 builder.Services.AddEndpointsApiExplorer();
@@ -45,6 +59,8 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
 }
+
+app.UseRateLimiter();
 
 // 3. API Endpoints
 
@@ -174,7 +190,7 @@ app.MapPost("/api/runs", async (
         record.VerificationError,
         record.CreatedAtUtc
     });
-});
+}).RequireRateLimiting("runs-limiter");
 
 app.MapGet("/api/leaderboard", async (AppDbContext db, int limit = 20) =>
 {
