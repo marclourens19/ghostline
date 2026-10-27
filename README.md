@@ -1,8 +1,9 @@
 # Ghostline
 
 [![.NET Core CI](https://github.com/marclourens19/ghostline/actions/workflows/dotnet.yml/badge.svg)](https://github.com/marclourens19/ghostline/actions/workflows/dotnet.yml)
-![Status](https://img.shields.io/badge/Status-Milestone%204.2%20Active-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-blue.svg)
+
+![Ghostline Gameplay and Replay Spectator](docs/assets/gameplay.png)
 
 Ghostline is a top-down 2D arena shooter built to demonstrate **authoritative server-side replay verification** for cheat-proof leaderboards.
 
@@ -156,8 +157,6 @@ The replay format uses integer millipixels to reduce floating-point divergence a
 ---
 
 ## Project Status
-
-**Current milestone:** 4.2 — Active
 
 Ghostline is under active development. Features and implementation details may change as the simulation, replay verification pipeline, and leaderboard infrastructure evolve.
 
